@@ -560,6 +560,7 @@ scripts/run_info_warm.sh                                              # BASEM=�
 uv run python scripts/judge_info_pilot.py raw/info_warm --cand i2warm --base gwarm
 ```
 
+- **주의: 두 실험 모두 `VecNormalize` 기본값 `clip_reward=10`으로 돌았다** (#235가 찾음). 정규화한 보상이 ±10에서 잘려, 충돌 −1000·시간 초과 −250 같은 큰 벌점은 의도한 크기보다 약하게 들어갔다. 함정 점검·정보 값어치는 잘림 없는 보상으로 계산한 값이라, 실험 1의 원인 분석(지나치기 함정)과 실험 2의 결과는 잘림이 섞인 상태의 결과다. 다시 한다면 `[ppo] clip_reward`(#235)로 한도를 올려서 돌린다
 - 사후 관찰 (가설): G로 더 학습한 대조군(4.5M)은 base(3M)보다 제안 − R2 차이가 −0.3 → −3.9%p(CI −8.6 ~ +1.3)로 벌어지고 0 kg에서 제안이 0.73 s 더 빨랐다
 - 함정 점검에서 A2·ab는 지나치기 − 기어가기 차이가 G의 3배다 (지나침 벌점을 안 키워서). v2에서 시드별 지나침·시간 초과를 확인한다
 - 하연 Mac(M5), 브랜치 `exp/research2-info-pilot`(하연 포크) 실행 `4a0a820`·`7246829`. 평가 원자료: `gs://amr-fleet-results/research2/explore/` (모델은 안 올림). 자세한 기록은 공유 문서 "탐색 실험" 절
