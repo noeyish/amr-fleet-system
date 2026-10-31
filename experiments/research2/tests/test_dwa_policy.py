@@ -97,6 +97,13 @@ def test_rotate_in_place_is_off_paper_value():
     assert cfg.rotate_in_place_clearance == 0.0
 
 
+def test_avoid_mode_is_off_paper_value():
+    # 논문 값: TTC 회피 모드 끔 - 창고 스택(nav2_params.yaml)이 켜도 따라가지 않는다. C API로 0이 넘어가야 한다
+    p = DwaPolicy().params
+    assert p.avoid_mode_enabled is False
+    assert DwaPolicy().config(1.0).avoid_mode_enabled == 0
+
+
 def test_names():
     assert DwaPolicy('b1').name == 'dwa_b1'
     with pytest.raises(ValueError):

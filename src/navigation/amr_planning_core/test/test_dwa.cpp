@@ -1572,4 +1572,149 @@ TEST(DwaPlannerTest, RotateInPlaceKeepsClearanceFromStaticObstacle)
   EXPECT_FALSE(keeps_clearance(no_margin, tight, state));
 }
 
+TEST(DwaPlannerTest, AvoidModeSwapsConfigAndBack)
+{
+  // 회피 모드(4-10절): 안전 여유 += avoid_margin_add, dynamic_weight *= avoid_weight_scale,
+  // sim_time = avoid_sim_time. 끄면 생성 때 설정으로 돌아온다
+  DwaConfig config = makeStackConfig();
+  config.avoid_mode_enabled = true;
+  DwaPlanner planner(config);
+  EXPECT_FALSE(planner.avoidMode());
+  planner.setAvoidMode(true);
+  EXPECT_TRUE(planner.avoidMode());
+  EXPECT_DOUBLE_EQ(
+    planner.config().dynamic_obstacle_safety_margin, config.dynamic_obstacle_safety_margin + 0.4);
+  EXPECT_DOUBLE_EQ(planner.config().dynamic_weight, config.dynamic_weight * 2.0);
+  EXPECT_DOUBLE_EQ(planner.rolloutTime(), 3.0);
+  EXPECT_EQ(planner.simulateTrajectory(RobotState(), 0.5, 0.0).size(), 30u);
+  EXPECT_DOUBLE_EQ(planner.config().sim_time, config.sim_time);  // 기준점·비용은 평소 sim_time
+  EXPECT_EQ(planner.config().v_samples, config.v_samples);
+  planner.setAvoidMode(false);
+  EXPECT_FALSE(planner.avoidMode());
+  EXPECT_DOUBLE_EQ(
+    planner.config().dynamic_obstacle_safety_margin, config.dynamic_obstacle_safety_margin);
+  EXPECT_DOUBLE_EQ(planner.config().dynamic_weight, config.dynamic_weight);
+  EXPECT_DOUBLE_EQ(planner.config().sim_time, config.sim_time);
+  EXPECT_DOUBLE_EQ(planner.rolloutTime(), config.sim_time);
+}
+
+TEST(DwaPlannerTest, AvoidModeKeepsHeadingTargetWithoutObstacles)
+{
+  // 회피 모드는 궤적 시뮬레이션 길이만 늘린다(avoid_rollout_time). heading 기준점(|v|*sim_time 앞)과 비용을
+  // 매기는 궤적 끝은 평소 sim_time 그대로라, 장애물이 없으면 모드가 바뀌어도 명령이 같다 - 기준점이 튀지 않는다.
+  // 90° 꺾이는 경로 앞에서 순항(기준점이 꺾인 곳 너머)·정지 출발·목표가 뒤(회전 모드) 세 경우로 본다.
+  TestGrid test_grid(200, 200, 0.05);
+  std::vector<Point2D> path;
+  appendLine(path, 1.0, 2.0, 3.0, 2.0);
+  appendLine(path, 3.0, 2.0, 3.0, 8.0);
+  DwaConfig config = makeStackConfig();
+  config.avoid_mode_enabled = true;
+  std::vector<RobotState> states(3);
+  states[0].x = 1.8;
+  states[0].y = 2.0;
+  states[0].v = 0.5;
+  states[1].x = 1.0;
+  states[1].y = 2.0;
+  states[2].x = 1.5;
+  states[2].y = 2.0;
+  states[2].yaw = kTestPi;
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    DwaPlanner normal(config);
+    DwaPlanner avoiding(config);
+    avoiding.setAvoidMode(true);
+    const DwaCommand a = normal.computeVelocityCommand(states[i], path, test_grid.grid());
+    const DwaCommand b = avoiding.computeVelocityCommand(states[i], path, test_grid.grid());
+    EXPECT_EQ(a.status, b.status) << "case " << i;
+    EXPECT_EQ(a.v, b.v) << "case " << i;
+    EXPECT_EQ(a.w, b.w) << "case " << i;
+    EXPECT_EQ(normal.rotatingInPlace(), avoiding.rotatingInPlace()) << "case " << i;
+  }
+}
+
+TEST(DwaPlannerTest, AvoidModeWidensDynamicMargin)
+{
+  // 왼쪽 앞에 서 있는 사람(동적 트랙, 속도 0): 직진 궤적 차체에서 0.35 m. 평소(여유 0.2 m)에는 그 옆을 지나는
+  // 궤적을 고르지만, 회피 모드(여유 0.6 m)에서는 그 궤적이 "충돌"이라 0.6 m 밖으로 비켜 가는 궤적만 남는다
+  TestGrid test_grid(200, 80, 0.05);
+  std::vector<Point2D> path;
+  appendLine(path, 1.0, 2.0, 8.0, 2.0);
+  DwaConfig config = makeStackConfig();
+  config.avoid_mode_enabled = true;
+  RobotState state;
+  state.x = 1.0;
+  state.y = 2.0;
+  state.v = 0.5;
+  DynamicObstacle person;
+  person.radius = 0.25;
+  person.x = 2.2;
+  person.y = 2.0 + 0.2 + 0.35 + person.radius;
+
+  DwaPlanner normal(config);
+  const DwaCommand near_pass = normal.computeVelocityCommand(state, path, test_grid.grid(), {person});
+  DwaPlanner avoiding(config);
+  avoiding.setAvoidMode(true);
+  const DwaCommand wide_pass =
+    avoiding.computeVelocityCommand(state, path, test_grid.grid(), {person});
+  ASSERT_EQ(near_pass.status, DwaStatus::kOk);
+  ASSERT_EQ(wide_pass.status, DwaStatus::kOk);
+
+  // 회피 모드 여유(0.6 m)로 검사: 평소 궤적은 닿고, 회피 모드 궤적은 안 닿는다
+  auto hits_wide_margin = [&](const DwaCommand & command) {
+      double t = 0.0;
+      for (const TrajectoryPoint & point : avoiding.simulateTrajectory(state, command.v, command.w)) {
+        t += avoiding.config().dt;
+        if (avoiding.dynamicObstacleCollides({person}, t, point.x, point.y, point.yaw)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  EXPECT_TRUE(hits_wide_margin(near_pass)) << "v=" << near_pass.v << " w=" << near_pass.w;
+  EXPECT_FALSE(hits_wide_margin(wide_pass)) << "v=" << wide_pass.v << " w=" << wide_pass.w;
+}
+
+TEST(DwaPlannerTest, AvoidModeDisabledMatchesPreviousBehavior)
+{
+  // avoid_mode_enabled = false면 setAvoidMode(true)를 무시한다 - 설정도 명령도 회피 모드 없는 플래너와 같다
+  TestGrid test_grid(200, 80, 0.05);
+  std::vector<Point2D> path;
+  appendLine(path, 1.0, 2.0, 8.0, 2.0);
+  const DwaConfig config = makeStackConfig();
+  ASSERT_FALSE(config.avoid_mode_enabled);
+  DwaPlanner disabled(config);
+  disabled.setAvoidMode(true);
+  EXPECT_FALSE(disabled.avoidMode());
+  EXPECT_DOUBLE_EQ(disabled.config().sim_time, config.sim_time);
+  EXPECT_DOUBLE_EQ(
+    disabled.config().dynamic_obstacle_safety_margin, config.dynamic_obstacle_safety_margin);
+  EXPECT_DOUBLE_EQ(disabled.config().dynamic_weight, config.dynamic_weight);
+
+  const DwaPlanner plain(config);
+  RobotState state;
+  state.x = 1.0;
+  state.y = 2.0;
+  state.v = 0.5;
+  DynamicObstacle person;
+  person.radius = 0.25;
+  person.x = 2.2;
+  person.y = 2.0 + 0.2 + 0.35 + person.radius;
+  person.vy = -0.3;
+  for (int step = 0; step < 30; ++step) {
+    const DwaCommand a = disabled.computeVelocityCommand(state, path, test_grid.grid(), {person});
+    const DwaCommand b = plain.computeVelocityCommand(state, path, test_grid.grid(), {person});
+    ASSERT_EQ(a.status, b.status) << "step=" << step;
+    ASSERT_EQ(a.v, b.v) << "step=" << step;
+    ASSERT_EQ(a.w, b.w) << "step=" << step;
+    if (a.status != DwaStatus::kOk) {
+      break;
+    }
+    state.x += a.v * std::cos(state.yaw) * config.dt;
+    state.y += a.v * std::sin(state.yaw) * config.dt;
+    state.yaw = wrapAngle(state.yaw + a.w * config.dt);
+    state.v = a.v;
+    state.w = a.w;
+    person.y += person.vy * config.dt;
+  }
+}
+
 }  // namespace amr_planning_core

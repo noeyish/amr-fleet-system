@@ -33,6 +33,7 @@ struct DwaCConfig
   double lookahead_distance;
   int adaptive_lookahead;
   double rotate_in_place_min_angle, rotate_in_place_exit_angle, rotate_in_place_clearance;
+  int avoid_mode_enabled;
 };
 
 static DwaConfig toConfig(const DwaCConfig * c)
@@ -65,6 +66,7 @@ static DwaConfig toConfig(const DwaCConfig * c)
   cfg.rotate_in_place_min_angle = c->rotate_in_place_min_angle;
   cfg.rotate_in_place_exit_angle = c->rotate_in_place_exit_angle;
   cfg.rotate_in_place_clearance = c->rotate_in_place_clearance;
+  cfg.avoid_mode_enabled = c->avoid_mode_enabled != 0;
   return cfg;
 }
 

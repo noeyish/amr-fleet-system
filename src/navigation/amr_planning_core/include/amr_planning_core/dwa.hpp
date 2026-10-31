@@ -201,6 +201,19 @@ struct DwaConfig
   // 가까워지면 정지시킨다 - DWA가 그보다 빠듯한 회전을 고르면 DWA는 계속 돌고 안전 노드는 계속 막아 멈춘다.
   // 그래서 두 값은 같아야 한다. 0이면 키우지 않는다.
   double rotate_in_place_clearance = 0.05;
+
+  // --- TTC 회피 모드 (navigation.md 4-10절) ---
+
+  // 회피 모드 기능 전체. false면 setAvoidMode(true)를 무시해 늘 위 설정 그대로다. 언제 켜고 끌지(TTC·시간)는
+  // 호출하는 쪽(amr_nav2_plugins DwaController)이 정한다 - 코어는 "회피 모드 여부"를 받아 아래 값으로 바꾸기만 한다.
+  bool avoid_mode_enabled = false;
+  // 회피 모드에서: dynamic_obstacle_safety_margin += avoid_margin_add (m), dynamic_weight *= avoid_weight_scale,
+  // 궤적 시뮬레이션 길이(충돌·동적 장애물 검사) = avoid_rollout_time (s, sim_time보다 짧으면 sim_time).
+  // sim_time 자체는 바꾸지 않는다 - heading 기준점 거리(|v|*sim_time)·비용을 매기는 궤적 끝(sim_time 시점)·제자리
+  // 회전 채택 기준(acc_w*dt*sim_time/2)은 평소 값 그대로라, 모드가 바뀌어도 기준점이 튀지 않는다.
+  double avoid_margin_add = 0.4;
+  double avoid_weight_scale = 2.0;
+  double avoid_rollout_time = 3.0;
 };
 
 // 경로 위에서 로봇에 가장 가까운 점부터 누적 거리가 distance 이상이 되는 첫 점
@@ -255,7 +268,8 @@ public:
   // 1단계: 동적 윈도우 계산. 단독으로도 테스트·검사할 수 있도록 공개한다.
   DynamicWindow computeDynamicWindow(const RobotState & state) const;
 
-  // 2단계: 차동구동 전진 운동학으로 (v, w) 궤적을 sim_time 동안 시뮬레이션한다.
+  // 2단계: 차동구동 전진 운동학으로 (v, w) 궤적을 rolloutTime() 동안(평소 sim_time, 회피 모드면
+  // avoid_rollout_time) 시뮬레이션한다.
   std::vector<TrajectoryPoint> simulateTrajectory(
     const RobotState & state, double v, double w) const;
 
@@ -279,7 +293,15 @@ public:
   // 매 주기 그 속도로 dt만큼 더 가는 만큼 상한보다 늦게 줄어, 최대로 감속해도 목표를 지나친다(#216).
   double goalStoppingVelocity(double goal_distance) const;
 
+  // 지금 쓰는 설정(회피 모드면 회피 모드 값으로 바뀐 것).
   const DwaConfig & config() const noexcept {return config_;}
+
+  // 회피 모드를 켜고 끈다. 켜면 config()가 avoid_* 값으로 바뀐 설정이 되고, 끄면 생성 때 설정으로 돌아온다.
+  // avoid_mode_enabled가 false면 무시한다(늘 꺼짐).
+  void setAvoidMode(bool active);
+  bool avoidMode() const noexcept {return avoid_mode_;}
+  // 지금 궤적 시뮬레이션 길이(s): 평소 sim_time, 회피 모드면 avoid_rollout_time.
+  double rolloutTime() const noexcept {return rollout_time_;}
 
   // 마지막 computeVelocityCommand가 제자리 회전 모드였는지(히스테리시스 상태).
   bool rotatingInPlace() const noexcept {return rotating_in_place_;}
@@ -330,6 +352,10 @@ private:
     const std::optional<Point2D> & final_goal) const;
 
   DwaConfig config_;
+  DwaConfig base_config_;   // 생성 때 설정(회피 모드 아닐 때)
+  DwaConfig avoid_config_;  // 회피 모드 설정
+  bool avoid_mode_ = false;
+  double rollout_time_ = 0.0;  // simulateTrajectory 길이
   // 제자리 회전 모드 히스테리시스 상태 - 주기 사이에 이어진다. computeVelocityCommand가 const라
   // mutable로 둔다(플러그인은 컨트롤러 하나에 DwaPlanner 하나, 한 스레드에서 부른다).
   mutable bool rotating_in_place_ = false;

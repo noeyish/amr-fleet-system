@@ -104,6 +104,19 @@ DwaPlanner::DwaPlanner(DwaConfig config)
   // 나오는 각도가 들어가는 각도보다 크면 모드에 들어가자마자 나와 매 주기 바뀐다
   config_.rotate_in_place_exit_angle =
     std::min(config_.rotate_in_place_exit_angle, config_.rotate_in_place_min_angle);
+  base_config_ = config_;
+  avoid_config_ = config_;
+  avoid_config_.dynamic_obstacle_safety_margin += config_.avoid_margin_add;
+  avoid_config_.dynamic_weight *= config_.avoid_weight_scale;
+  rollout_time_ = config_.sim_time;
+}
+
+void DwaPlanner::setAvoidMode(bool active)
+{
+  avoid_mode_ = active && base_config_.avoid_mode_enabled;
+  config_ = avoid_mode_ ? avoid_config_ : base_config_;
+  rollout_time_ = avoid_mode_ ?
+    std::max(base_config_.sim_time, base_config_.avoid_rollout_time) : base_config_.sim_time;
 }
 
 DynamicWindow DwaPlanner::computeDynamicWindow(const RobotState & state) const
@@ -134,7 +147,7 @@ std::vector<TrajectoryPoint> DwaPlanner::simulateTrajectory(
   const RobotState & state, double v, double w) const
 {
   std::vector<TrajectoryPoint> trajectory;
-  const int steps = std::max(1, static_cast<int>(std::round(config_.sim_time / config_.dt)));
+  const int steps = std::max(1, static_cast<int>(std::round(rollout_time_ / config_.dt)));
   trajectory.reserve(static_cast<std::size_t>(steps));
 
   double x = state.x;
@@ -475,6 +488,10 @@ DwaCommand DwaPlanner::selectCommand(
     double v[2] = {0.0, 0.0};
     double w[2] = {0.0, 0.0};
   };
+  // 비용(heading)을 매기는 궤적 길이: sim_time 시점까지(회피 모드의 긴 궤적은 충돌 검사에만 쓴다)
+  const std::size_t cost_steps = static_cast<std::size_t>(
+    std::max(1, static_cast<int>(std::round(config_.sim_time / config_.dt))));
+
   // turn_search: 회전 모드의 회전 후보 탐색이면 true - v≈0 샘플을 회전한 뒤 방향으로 채점하고 회전 샘플은
   // 풋프린트를 turn_clearance만큼 키운다. 전체 윈도우 탐색(false)은 평소처럼 정지를 1.0으로 고정한다 - 아니면
   // "목표 보고 서 있기" 함정이 다시 열린다.
@@ -564,9 +581,10 @@ DwaCommand DwaPlanner::selectCommand(
           continue;
         }
 
-        // 닿는 궤적은 설 수 있는 마지막 점(닿기 직전)에서 heading을 본다.
+        // 닿는 궤적은 설 수 있는 마지막 점(닿기 직전)에서 heading을 본다. 회피 모드에서 궤적을 sim_time보다 길게
+        // 시뮬레이션해도(avoid_rollout_time) heading은 sim_time 시점까지만 본다 - 기준점(|v|*sim_time 앞)과 맞춘다.
         const TrajectoryPoint & trajectory_end =
-          trajectory[std::min(free_steps, heading_steps) - 1];
+          trajectory[std::min({free_steps, heading_steps, cost_steps}) - 1];
         // 동적 거리비용: 여유 밖 장애물은 궤적을 따라 잰 최소 거리, 이미 여유 안인 장애물은 설 수 있는
         // 마지막 점(궤적 끝)에서의 거리 - 둘 중 큰 쪽(#228 연우 리뷰)
         double dynamic_cost = dynamicObstacleCost(min_dynamic_surface_distance);
@@ -604,7 +622,8 @@ DwaCommand DwaPlanner::selectCommand(
       // 돌면 줄어드는 오차의 절반(기본값 3.2 * 0.1 * 2.0 / 2 = 0.32 rad). 정상적인 회전은 출발 주기에도 이만큼
       // 줄이고, 막혀서 거의 안 도는 샘플은 못 넘는다. 설정값에서 계산하므로 acc_w·dt·sim_time이 바뀌면 같이 바뀐다.
       // 전체 윈도우 최선과 비용으로 겨루는 안은 velocity_weight 때문에 전진 호가 늘 이겨 출발 때 크게 돌았다.
-      const TrajectoryPoint end = simulateTrajectory(state, best.v[0], best.w[0]).back();
+      const std::vector<TrajectoryPoint> turn = simulateTrajectory(state, best.v[0], best.w[0]);
+      const TrajectoryPoint end = turn[std::min(turn.size(), cost_steps) - 1];
       const double end_error = std::abs(normalizeAngle(
           std::atan2(goal.y - end.y, goal.x - end.x) - end.yaw));
       const double min_gain = 0.5 * config_.acc_w * config_.dt * config_.sim_time;

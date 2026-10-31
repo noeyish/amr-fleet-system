@@ -293,6 +293,20 @@ controller_server:
       # config/safety.yaml, collision.path_hazard)과 같아야 한다 - DWA 회전이 더 빠듯하면 안전 노드가 그 회전을
       # 계속 막아 progress_checker까지 멈춘다
       rotate_in_place_clearance: 0.05
+      # TTC 회피 모드 (navigation.md 4-10절): perception/collision_risks의 움직이는 트랙 최소 TTC가 avoid_ttc_enter_s보다
+      # 작으면 켜고, TTC >= avoid_ttc_enter_s(또는 inf)가 avoid_exit_hold_s 동안 이어지면 끈다. collision_risks가
+      # avoid_risk_timeout_s 넘게 안 오면 지금 상태를 유지한다(켜져 있으면 끄지 않음). 상태는 dwa/avoid_mode(Bool)로 낸다
+      avoid_mode_enabled: True
+      avoid_ttc_enter_s: 3.0
+      avoid_exit_hold_s: 0.5
+      avoid_risk_timeout_s: 0.3
+      # 회피 모드에서: dynamic_obstacle_safety_margin += avoid_margin_add (정면 최악: 통신 0.1 s + 추적 0.1 s 지연 동안
+      # 상대속도 2.0 m/s(로봇 0.5 + 동적 장애물 최대 1.5)로 다가오는 거리 0.4 m), dynamic_weight *= avoid_weight_scale
+      # (초기값, 튜닝용 시드로만 조정해 I17 본 측정 전에 고정), 궤적 시뮬레이션 길이 = avoid_rollout_time (TTC 3 s 범위를
+      # 충돌 검사가 덮게. sim_time·heading 기준점은 그대로)
+      avoid_margin_add: 0.4
+      avoid_weight_scale: 2.0
+      avoid_rollout_time: 3.0
 
 # --- TEB (DWA 비교 대상, #110 underlay·(10) 작업) ---
 # 원 명세 "DWA 직접구현 vs TEB" 비교. teb_local_planner는 apt에 없어 /opt/teb_ws에 소스로

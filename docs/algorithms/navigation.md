@@ -145,6 +145,9 @@ TODO(2주차): `amr_planning_core`의 A* 알고리즘 설명(격자 표현, 8방
 | `lookahead_distance` / `adaptive_lookahead` | 0.5 m / true | 4-8절. 경로 버전의 heading 기준점 |
 | `rotate_in_place_min_angle` / `rotate_in_place_exit_angle` | 0.785 / 0.524 rad (45° / 30°) | 4-9절. 제자리 회전 모드 들어가기·나오기(경로 버전). exit > min이면 min으로 줄인다 |
 | `rotate_in_place_clearance` | 0.05 m | 4-9절. 회전 모드의 제자리 회전 샘플 풋프린트 여유. 안전 노드 `side_margin`과 같아야 한다 |
+| `avoid_mode_enabled` | false (창고 스택 yaml true) | 4-10절. TTC 회피 모드 전체. 연구 2는 false 고정 |
+| `avoid_margin_add` / `avoid_weight_scale` / `avoid_rollout_time` | 0.4 m / 2.0 / 3.0 s | 4-10절. 회피 모드에서 안전 여유 더하기, 동적 가중치 곱, 궤적 시뮬레이션 길이 |
+| `avoid_ttc_enter_s` / `avoid_exit_hold_s` / `avoid_risk_timeout_s` (플러그인) | 3.0 / 0.5 / 0.3 s | 4-10절. 켜기 TTC, 끄기 전 유지 시간, collision_risks 끊김 판정 |
 
 **샘플 수 (10/27, 창고 스택 `nav2_params.yaml` 10 x 15):** `computeVelocityCommand` 한 번 계산 시간을 재고
 (x86 8코어, 다른 부하 없음, 3 x 3 m local costmap + 통로 벽·inflation, 90° 꺾이는 경로, max_v 0.5, 300회 중앙값),
@@ -342,6 +345,54 @@ heading을 끝점 앞에서 재므로 이 가림이 없어진다(4-8절).
 - 연구 2(`experiments/research2`)는 제자리 회전을 끄고(`rotate_in_place_min_angle` 0) 회전 샘플 여유도 0이다
   (`DwaParams`, 논문 값). C API(`dwa_c_api.cpp`)는 호출마다 플래너를 새로 만들어, 켜더라도 히스테리시스 상태가
   안 이어진다.
+
+### 4-10. TTC 회피 모드 (`avoid_mode_enabled`)
+
+I17(원 명세 7장 동적 장애물 회피) 측정용이다. 평소 DWA는 동적 장애물을 안전 여유 0.2 m·`sim_time` 2.0 s 안에서만
+본다. 사람이 빠르게 다가오는 짧은 동안만 더 멀리·더 크게 피하게 한다.
+
+**진입·해제 (플러그인 `AvoidModeSwitch`, `amr_nav2_plugins/avoid_mode.hpp`)**
+- `perception/collision_risks`(로봇 네임스페이스)의 TTC 중 **움직이는 트랙(`is_dynamic`)만** 본다. `CollisionRisk`에는
+  `is_dynamic`이 없어 같은 추적 결과(`perception/obstacles`)의 `track_id`로 짝짓는다(`toDynamicObstacles`와 같은
+  기준). 정적 트랙(랙 면 등)은 이미 costmap에 있다
+- 켜기: 최소 TTC < `avoid_ttc_enter_s`(3.0 s)
+- 끄기: TTC ≥ 3.0 s(또는 inf, 충돌 경로 아님)가 `avoid_exit_hold_s`(0.5 s) 동안 이어질 때. 그 사이 한 번이라도
+  위험하면 처음부터 다시 센다 - 문턱 근처에서 켜고 끄기가 떨지 않게
+- 상태는 `dwa/avoid_mode`(`std_msgs/Bool`, transient local)로 바뀔 때 발행하고(활성화 때 처음 상태 한 번), 켜고 꺼질
+  때 INFO 로그를 남긴다
+- 코어(`DwaPlanner::setAvoidMode`)는 "회피 모드 여부"만 받아 설정을 바꾼다. 토픽·시간은 플러그인이 맡는다
+
+**collision_risks가 끊기면 지금 상태를 유지한다** (`avoid_risk_timeout_s` 0.3 s, 경고 로그는 2 s 스로틀). 켜져 있으면
+끄지 않는다 - 끊긴 사이 위험이 왔는지 모르고, 회피 중에 추적이 잠깐 끊겼다고 여유를 줄이면 가장 가까울 때 덜 피한다.
+다시 오면 안전한 TTC가 0.5 s 동안 새로 이어져야 끈다. 꺼져 있으면 켜지 않는다 - 추적 노드를 안 띄우는 스택
+(fleet_stack 등)은 처음부터 collision_risks가 없어, 끊김을 위험으로 보면 늘 회피 모드가 된다. 그래서 한 번도 안 받았으면
+끊김으로 보지 않는다(경고도 없음).
+
+**회피 모드에서 바뀌는 것**
+- `dynamic_obstacle_safety_margin` += `avoid_margin_add` **0.4 m**: 정면 최악 기준. 통신 100 ms + 추적 100 ms = 0.2 s
+  지연 동안 상대속도 2.0 m/s(로봇 0.5 + 명세 동적 장애물 최대 1.5)로 다가오는 거리다. 옆으로 건너는 경우(상대속도 약
+  1.6 m/s)면 0.32 m라, 정면 기준이 더 크다
+- `dynamic_weight` *= `avoid_weight_scale` **2.0**: 초기값이다. 튜닝은 튜닝용 시드(1001~)로만 하고, I17 본 측정
+  (시드 1~30) 전에 고정한다
+- 궤적 시뮬레이션 길이 = `avoid_rollout_time` **3.0 s**: TTC 3 s 안의 장애물을 충돌 검사가 덮게 한다(평소 2.0 s면
+  2~3 s 뒤 만날 장애물은 궤적 밖이다). **궤적 길이만** 바꾼다 - heading 기준점 거리(|v|·`sim_time`, 4-8절), 비용을
+  매기는 궤적 끝(`sim_time` 시점), 제자리 회전 채택 기준(`acc_w·dt·sim_time/2`, 4-9절)은 평소 `sim_time` 2.0 s
+  그대로다. `sim_time` 자체를 3.0으로 바꾸면 기준점이 1.5배 멀어져 모드가 바뀌는 순간 목표 방향이 튄다
+  (`AvoidModeKeepsHeadingTargetWithoutObstacles`: 장애물이 없으면 모드와 상관없이 명령이 같다)
+
+**계산 시간** (창고 스택 10×15, `computeVelocityCommand` 1회, 평균 ms (최대 ms), 3회 실행의 범위. x86 8코어, 3×3 m local
+costmap, max_v 0.5, 300회씩. 최악은 회전 모드에서 회전이 거부돼 전체 윈도우를 다시 탐색하는 경우, 4-9절)
+
+| 경우 | 평소 (최적화 없음) | 회피 모드 (최적화 없음) | 평소 (-O2) | 회피 모드 (-O2) |
+| --- | --- | --- | --- | --- |
+| 순항 | 14.9–15.9 (21–24) | 16.1–16.7 (23–29) | 5.6–6.0 (6.7–12) | 6.1–6.4 (7.4–14) |
+| 동적 장애물 2개 | 15.3–16.2 (19–26) | 16.3–17.2 (18–29) | 5.8–6.0 (9.2–10) | 6.2–6.6 (7.9–16) |
+| 최악 (회전 거부) | 12.1–12.7 (16–19) | 14.5–15.3 (18–21) | 4.5–4.7 (6.4–14) | 5.5–5.8 (10–16) |
+
+회피 모드는 궤적이 1.5배(20 → 30점)지만 평균 5~25%만 는다 - 늘어난 점은 대부분 3×3 m local costmap 밖이라(순항 0.5 m/s ×
+3 s = 1.5 m) 칸을 안 본다. 최악도 최적화 없는 빌드 최대 29 ms로 20 Hz 제어 주기(50 ms) 안이다.
+
+**연구 2**는 `avoid_mode_enabled`를 false로 고정한다(`DwaParams`, C API로 넘김, `test_avoid_mode_is_off_paper_value`).
 
 ## 5. Pure Pursuit · Stanley · PID
 
