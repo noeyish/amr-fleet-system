@@ -14,8 +14,9 @@
   xy_goal_tolerance 안이면 제자리 회전. no_valid·goal_reached면 정지
 - xy_goal_tolerance는 Gazebo(0.25 m)와 다르게 환경 도착 기준(0.2 m)으로 둔다. 플러그인 주석대로 goal_checker와
   같아야 하고, 0.25 m면 도착 반경 밖에서 서 버린다
-- 샘플 수(v_samples·w_samples)와 제자리 회전(rotate_in_place_*)은 nav2_params를 따라가지 않고 논문 값으로 고정한다
-  (20 x 30, 회전 끔). 창고 스택은 10 x 15·회전 45°다 (#244, DwaParams 주석)
+- 샘플 수(v_samples·w_samples), 제자리 회전(rotate_in_place_*), TTC 회피 모드(avoid_mode_enabled)는 nav2_params를
+  따라가지 않고 논문 값으로 고정한다 (20 x 30, 회전 끔, 회피 모드 끔). 창고 스택은 10 x 15·회전 45°·회피 모드 켬이다
+  (#244, DwaParams 주석)
 
 질량은 가감속 한계 acc_v로 들어간다 (나머지 파라미터는 위 예외 말고 nav2_params.yaml DWA 블록 그대로):
 - B1 ('b1'): 빈 차 기준 a_max(0 kg) 고정
@@ -83,6 +84,9 @@ class DwaParams:
     # 제자리 회전 샘플의 풋프린트 여유(창고 스택 0.05 m, 안전 노드와 맞춤). 논문 값은 0(키우지 않음) - 회전을 꺼도
     # v≈0 회전 샘플은 평소 탐색에 있어서, 켜 두면 B1·B2가 바뀐다
     rotate_in_place_clearance: float = 0.0
+    # TTC 회피 모드(창고 스택, navigation.md 4-10절)는 논문 값으로 끈다. 연구 2 환경에는 collision_risks가 없고,
+    # 켜면 B1·B2의 안전 여유·가중치·sim_time이 바뀐다
+    avoid_mode_enabled: bool = False
     follow_path: bool = True          # 플러그인처럼 전역 경로를 넘긴다 (#195). False면 예전 지점 호출
     path_resolution: float = 0.05
     # 플러그인
@@ -112,7 +116,7 @@ class _CConfig(ctypes.Structure):
         ('use_admissible_velocity', ctypes.c_int), ('use_goal_slowdown', ctypes.c_int),
         ('lookahead_distance', ctypes.c_double), ('adaptive_lookahead', ctypes.c_int),
         ('rotate_in_place_min_angle', ctypes.c_double), ('rotate_in_place_exit_angle', ctypes.c_double),
-        ('rotate_in_place_clearance', ctypes.c_double)]
+        ('rotate_in_place_clearance', ctypes.c_double), ('avoid_mode_enabled', ctypes.c_int)]
 
 
 _lib = None
@@ -197,7 +201,7 @@ class DwaPolicy:
                         p.dynamic_obstacle_influence_radius, p.dynamic_weight,
                         int(p.use_admissible_velocity), int(p.use_goal_slowdown), p.lookahead_distance,
                         int(p.adaptive_lookahead), p.rotate_in_place_min_angle, p.rotate_in_place_exit_angle,
-                        p.rotate_in_place_clearance)
+                        p.rotate_in_place_clearance, int(p.avoid_mode_enabled))
 
     # ------------------------------------------------------------ ROS 노드가 하던 일
     @staticmethod
