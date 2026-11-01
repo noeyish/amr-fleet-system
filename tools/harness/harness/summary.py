@@ -39,6 +39,9 @@ FAILURE_CAUSES = {'localization': {'203'}, 'nav': {'201', '202'}, 'traffic': {'3
 NAV_KPI = {'navkpi.plan_success_rate': (0.98, 'min'), 'navkpi.replan_p95_ms': (500.0, 'max'),
            'navkpi.pred_err_mean': (0.15, 'max'), 'navkpi.cte_straight_mean_m': (0.05, 'max'),
            'navkpi.cte_curve_mean_m': (0.10, 'max')}
+# I12 (docs/test-plan.md, fleet_i12만): 측정 손실률·지연 중앙값이 주입값과 맞고, 할당 명령이 모두 Ack된다.
+# 손실 1 %p: 10/16 손실 30% 10회가 29.1~30.5%. 지연 5 ms: 지연 100 ms 10회 평균이 101 ms (DDS 전달 몫)
+I12_KPI = {'i12.loss_err_pp': (1.0, 'max'), 'i12.latency_err_ms': (5.0, 'max'), 'i12.ack_rate': (1.0, 'min')}
 
 
 def load_meta(run_dir: Path) -> dict:
@@ -84,6 +87,7 @@ def fleet_metrics(run_dir: Path) -> dict[str, float]:
         lat = sorted(_floats((r for r in judged if r['delivered'] == '1'), 'latency_ms'))
         if lat:
             out['fleet.latency_ms.mean'] = sum(lat) / len(lat)
+            out['fleet.latency_ms.p50'] = percentile(lat, 0.5)
             out['fleet.latency_ms.p95'] = percentile(lat, 0.95)
             out['fleet.latency_ms.p99'] = percentile(lat, 0.99)
             out['fleet.latency_ms.max'] = lat[-1]
@@ -333,11 +337,25 @@ def avoidance_metrics(run_dir: Path) -> dict[str, float]:
     return out
 
 
+def i12_metrics(meta: dict, fleet: dict[str, float]) -> dict[str, float]:
+    """I12: 주입값과 측정값의 차이. 지연은 중앙값으로 본다 (재전송으로 늦게 닿은 메시지가 평균을 끌어올린다)."""
+    if meta.get('scenario') != 'fleet_i12' or 'fleet.loss_rate' not in fleet:
+        return {}
+    params = meta.get('params') or {}
+    out = {'i12.loss_err_pp': abs(fleet['fleet.loss_rate'] * 100 - float(params.get('loss_pct', 0)))}
+    if 'fleet.latency_ms.p50' in fleet:
+        out['i12.latency_err_ms'] = abs(fleet['fleet.latency_ms.p50'] - float(params.get('delay_ms', 0)))
+    if 'fleet.ack_rate' in fleet:
+        out['i12.ack_rate'] = fleet['fleet.ack_rate']
+    return out
+
+
 def run_metrics(run_dir: Path) -> dict[str, float]:
     meta = load_meta(run_dir)
-    out = {**localization_metrics(run_dir), **fleet_metrics(run_dir), **nav_metrics(run_dir),
+    fleet = fleet_metrics(run_dir)
+    out = {**localization_metrics(run_dir), **fleet, **nav_metrics(run_dir),
            **kidnap_metrics(run_dir), **nav_kpi_metrics(run_dir), **cpu_metrics(run_dir),
-           **avoidance_metrics(run_dir)}
+           **avoidance_metrics(run_dir), **i12_metrics(meta, fleet)}
     rtf = meta.get('real_time_factor')
     if isinstance(rtf, (int, float)):
         out['run.real_time_factor'] = float(rtf)
@@ -369,8 +387,8 @@ def kpi_verdict(metric: str, mean: float, ci_high: Optional[float], ci_low: Opti
         threshold = 0.0
     elif metric == 'sys.cpu_pct.mean':
         threshold = CPU_KPI_PCT
-    elif metric in NAV_KPI:
-        threshold, kind = NAV_KPI[metric]
+    elif metric in NAV_KPI or metric in I12_KPI:
+        threshold, kind = NAV_KPI.get(metric) or I12_KPI[metric]
         if kind == 'min':
             if ci_low is not None and ci_low >= threshold:
                 return 'PASS'
